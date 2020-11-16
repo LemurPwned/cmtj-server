@@ -4,10 +4,10 @@ project(cmtj_server)
 set(CMAKE_CXX_STANDARD 20)
 find_package(Boost)
 find_package(nlohmann_json 3.2.0 REQUIRED)
+find_package (Threads)
 
-find_package(openssl REQUIRED)
+find_package(OpenSSL REQUIRED)
 if( OPENSSL_FOUND )
-
     include_directories(${OPENSSL_INCLUDE_DIR})
     message(STATUS "Using OpenSSL ${OPENSSL_VERSION}")
 endif()

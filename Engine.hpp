@@ -3,36 +3,71 @@
 #include <boost/uuid/uuid.hpp>            // uuid class
 #include <boost/uuid/uuid_generators.hpp> // generators
 #include <boost/uuid/uuid_io.hpp>         // streaming operators etc.
+#include <boost/lexical_cast.hpp>
 #include <junction.hpp>
 
+#include "QueueHandler.hpp"
+#include "third/httplib.h"
 #include <nlohmann/json.hpp>
-#include <amqpcpp.h>
-#include <amqpcpp/linux_tcp.h>
 
 using json = nlohmann::json;
 
 class Engine
 {
 private:
-    boost::uuids::string_generator generator;
+    SafeQueue<json> queue;
 
-    const std::string fileRouter(const std::string &db)
-    {
-        boost::uuids::uuid uuid1 = generator("{01234567-89ab-cdef-0123-456789abcdef}");
-
-        return boost::uuids::to_string(uuid1);
-    }
-
+    const std::string queueName = "taskQueue";
     void runSimulation(Junction j, double tStart, double tStop)
     {
     }
 
 public:
+    void startServer(const char *IP = "0.0.0.0",
+                     const int port = 8080)
+    {
+        std::cout << "Starting server at: " << IP << ":" << port << std::endl;
+        httplib::Server svr;
 
-    void observeQueue(std::string topic){
+        svr.Get("/vsd", [](const httplib::Request &, httplib::Response &res) {
+            res.set_content("Hello World!", "text/plain");
+        });
+        svr.Post("/queue",
+                 [&](const httplib::Request &req,
+                     httplib::Response &res,
+                     const httplib::ContentReader &content_reader) {
+                     std::string body;
+                     content_reader([&](const char *data, size_t data_length) {
+                         body.append(data, data_length);
+                         return true;
+                     });
 
+                     json resp;
+                     auto parsed = json::parse(body);
+                     this->queue.enqueue(parsed);
+                     boost::uuids::uuid uuid = boost::uuids::random_generator()();
+                     const auto uuidStr = boost::lexical_cast<std::string>(uuid);
+                     std::cout << "New UUID created: " << uuidStr << std::endl;
+                     resp["uuid"] = uuidStr;
+                     resp["message"] = "Accepted onto queue";
+                     res.set_content(resp.dump(), "text/json");
+                 });
+
+        svr.listen(IP, port);
     }
 
+    void observeQueue()
+    {
+        std::cout << "Starting observation queue" << std::endl;
+        while (true)
+        {
+            auto task = this->queue.dequeue();
+            std::cout << "Popped the task off the queue!" << std::endl;
+            Layer l;
+            parseLayer(task, l);
+            std::cout << l.damping << " " << l.demagTensor[2].x << " " << l.demagTensor[2].y << " " << l.demagTensor[2].z << std::endl;
+        }
+    }
 
     void parseJsonString(std::string filename)
     {
