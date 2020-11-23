@@ -7,13 +7,26 @@
 #include <chrono>
 #include <junction.hpp>
 
+#include <future>
 #include <map>
+#include <thread>
 
 #include "QueueHandler.hpp"
 #include "third/httplib.h"
 #include <nlohmann/json.hpp>
-
+#include <spdlog/spdlog.h>
+#include <tuple>
 using json = nlohmann::json;
+
+void setupLogger()
+{
+
+    spdlog::info("Setting up the logger");
+    spdlog::set_level(spdlog::level::debug); // Set global log level to debug
+
+    // change log pattern
+    spdlog::set_pattern("[%H:%M:%S %z] [%^--%L--%$] [Th.%t] %v");
+}
 
 void setScalarDriver(const std::string &obj, Junction &j, const std::string &layerD, ScalarDriver driver)
 {
@@ -47,19 +60,15 @@ public:
     {
 
         std::vector<Layer> layers = {};
-        std::cout << "Parsing the layers" << std::endl;
         for (auto &layerDef : task["layers"])
         {
             Layer l;
-            std::cout << layerDef << std::endl;
             this->parseLayer(layerDef, l);
             layers.push_back(l);
         }
-        std::cout << "Finished parsing the layers" << std::endl;
 
         Junction j(layers, filename, task.value("Rp", 100), task.value("Rap", 200));
 
-        std::cout << "Parsing the drivers" << std::endl;
         for (auto driverDef : task.at("drivers"))
         {
             const auto layerD = driverDef.at("layer"); // top, free, bottom
@@ -79,7 +88,7 @@ public:
                 setScalarDriver(obj, j, layerD, dr);
             }
         }
-        std::cout << "Finished parsing the drivers" << std::endl;
+        spdlog::info("Finished parsing the driver options");
         return j;
     }
 
@@ -161,82 +170,142 @@ private:
 
     void parseRunVSD(Junction &j, json vsdTask)
     {
-        std::cout << "Parsing the response" << std::endl;
-        const double amplitude = vsdTask.at("vsdParams").at("amplitude").get<double>();
-        const double phase = vsdTask.at("vsdParams").at("phase").get<double>();
-        const int hsteps = vsdTask.at("vsdParams").at("hsteps").get<int>();
+        spdlog::info("Parsing the VSD task");
+        json subTaskDef = vsdTask.at("vsdParams");
+        const double amplitude = subTaskDef.at("amplitude").get<double>();
+        const double phase = subTaskDef.at("phase").get<double>();
+        const int hsteps = subTaskDef.at("hsteps").get<int>();
 
-        const auto hstartVec = vsdTask.at("vsdParams").at("Hstart").get<std::vector<double>>();
-        const auto hstepVec = vsdTask.at("vsdParams").at("Hstep").get<std::vector<double>>();
+        const auto hstartVec = subTaskDef.at("Hstart").get<std::vector<double>>();
+        const auto hstepVec = subTaskDef.at("Hstep").get<std::vector<double>>();
 
         CVector hstart(hstartVec);
         CVector hstep(hstepVec);
 
-        const int fsteps = vsdTask.at("vsdParams").at("fsteps").get<int>();
-        double fstart = vsdTask.at("vsdParams").at("frequencyStart").get<double>();
-        double fstep = vsdTask.at("vsdParams").at("frequencyStep").get<double>();
+        const int fsteps = subTaskDef.at("fsteps").get<int>();
+        double fstart = subTaskDef.at("frequencyStart").get<double>();
+        double fstep = subTaskDef.at("frequencyStep").get<double>();
 
-        const double time = vsdTask.at("vsdParams").at("time").get<double>();
-        const double tStep = vsdTask.at("vsdParams").at("tStep").get<double>();
-        const double tWrite = vsdTask.at("vsdParams").at("tWrite").get<double>();
-        const double tStart = vsdTask.at("vsdParams").at("tStart").get<double>();
-        const double power = vsdTask.at("vsdParams").at("tStart").get<double>();
-        runVSD(vsdTask.at("uuid").get<std::string>(), j,
-               hstart, hstep, hsteps, amplitude, phase, fstart, fstep, fsteps, time, tStep, tWrite, tStart, power);
+        const double time = subTaskDef.at("time").get<double>();
+        const double tStep = subTaskDef.at("tStep").get<double>();
+        const double tWrite = subTaskDef.at("tWrite").get<double>();
+        const double tStart = subTaskDef.at("tStart").get<double>();
+        const double power = subTaskDef.at("tStart").get<double>();
+
+        spdlog::info("FStart {}, FStep {}, #steps {}", fstart, fstep, fsteps);
+        runVSD(vsdTask.at("uuid").get<std::string>(), // task UUID
+               j,                                     // junction
+               hstart,                                // start ext field vector
+               hstep,                                 // step ext field vector
+               hsteps,                                // no of steps
+               amplitude,                             // amplitude of the excitation
+               phase,                                 // phase of the excitation
+               fstart,                                // start frequency
+               fstep,                                 // step frequency
+               fsteps,                                // number of freq steps
+               time,
+               tStep,
+               tWrite,
+               tStart,
+               power);
     }
 
-    void runVSD(std::string uuid, Junction &j, CVector hstart, CVector hstep, int hsteps,
+    typedef std::tuple<double, std::map<std::string, double>> fnRes;
+    typedef std::tuple<int, double, double> trituple;
+    void runVSD(std::string uuid, Junction &mtj, CVector hstart, CVector hstep, int hsteps,
                 double amplitude, double phase,
                 double fstart, double fstep, int fsteps, double time, double tStep, double tWrite, double tStart, double power)
     {
-        CVector hSweep = hstart;
+
         double fSweep = fstart;
-        std::vector<double> frequencies, Vmix, Rpp;
-        std::vector<int> fieldSteps;
-        std::cout << "Calculating the VSD" << std::endl;
+        // std::vector<double> frequencies, Vmix, Rpp;
+        // std::vector<int> fieldSteps;
+        spdlog::info("Calculating the VSD");
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
-        for (int k = 0; k < fsteps; k++)
-        {
-            for (int i = 0; i < hsteps; i++)
-            {
-                j.clearLog();
-                j.setLayerExternalFieldDriver(
-                    "all",
-                    AxialDriver(
-                        ScalarDriver::getSineDriver(hSweep.x, amplitude, fSweep, phase),
-                        ScalarDriver::getConstantDriver(hSweep.y),
-                        ScalarDriver::getConstantDriver(hSweep.z)));
-                j.runSimulation(
-                    time,
-                    tStep, tWrite, false, false, false);
+        // distribute the frequencies
+        const int threadNum = std::thread::hardware_concurrency() - 1;
+        spdlog::info("Using {} threads to distribute the task workload!", threadNum);
 
-                auto res = j.calculateVoltageSpinDiode(fSweep, power, tStart);
-                frequencies.push_back(fSweep);
-                fieldSteps.push_back(i);
-                Vmix.push_back(res["Vmix"]);
-                Rpp.push_back(res["Rpp"]);
-                hSweep = hSweep + hstep;
+        std::vector<std::future<std::vector<trituple>>> threadResults;
+        threadResults.reserve(threadNum);
+
+        // const double threadSpacingFreq = (fstep * fsteps - fstart) / threadNum;
+        const int minThreadLoad = (int)fsteps / threadNum;
+        int extraThreadWorkload = fsteps % threadNum;
+        spdlog::info("Min subtask load {} per thread", minThreadLoad);
+        for (int t = 0; t < threadNum; t++)
+        {
+            int threadLoad = minThreadLoad;
+            if (extraThreadWorkload)
+            {
+                threadLoad += 1;
+                extraThreadWorkload--;
+            }
+            const double threadMinFreq = fstart + t * fstep;
+            const double threadMaxFreq = fstart + (t + 1) * fstep;
+            // const int threadFreqSteps = t*
+            spdlog::info("Launching thread {} with freq => {} to {}, load {}", t, threadMinFreq, threadMaxFreq, threadLoad);
+            threadResults.emplace_back(std::async([=]() mutable {
+                std::vector<trituple> resAcc;
+                int freqIndx = 0;
+                for (double freq = threadMinFreq; freqIndx < threadLoad; freq += fstep)
+                {
+                    CVector hSweep = hstart;
+                    for (int i = 0; i < hsteps; i++)
+                    {
+                        mtj.clearLog();
+                        mtj.setLayerExternalFieldDriver(
+                            "all",
+                            AxialDriver(
+                                ScalarDriver::getSineDriver(hSweep.x, amplitude, freq, phase),
+                                ScalarDriver::getConstantDriver(hSweep.y),
+                                ScalarDriver::getConstantDriver(hSweep.z)));
+                        mtj.runSimulation(
+                            time,
+                            tStep, tWrite, false, false, false);
+
+                        auto res = mtj.calculateVoltageSpinDiode(freq, power, tStart);
+                        auto resTuple = std::make_tuple(i, freq, res["Vmix"]);
+                        resAcc.push_back(resTuple);
+                    }
+                    freqIndx += 1;
+                }
+                return resAcc;
+            }));
+        }
+        std::map<std::string, std::vector<double>> finalRes;
+        for (auto &result : threadResults)
+        {
+            for (const auto [fieldIndx, freq, vmix] : result.get())
+            {
+                finalRes["fieldSteps"].push_back(fieldIndx);
+                finalRes["frequencies"].push_back(freq);
+                finalRes["Vmix"].push_back(vmix);
             }
         }
-        fSweep += fstep;
-        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::cout << "Total simulation time = " << std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() << "[s]" << std::endl;
+
         json response = {
-            {"frequencies", frequencies},
-            {"fieldSteps", fieldSteps},
-            {"Vmix", Vmix},
-            {"Rpp", Rpp}};
+            {"frequencies", finalRes["frequencies"]},
+            {"fieldSteps", finalRes["fieldSteps"]},
+            {"Vmix", finalRes["Vmix"]},
+        };
 
         std::ofstream o(uuid + ".json");
         o << std::setw(4) << response << std::endl;
+        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+        spdlog::info("Total result retrieval time = {} [s]", std::chrono::duration_cast<std::chrono::seconds>(end - begin).count());
     }
 
 public:
+    Engine()
+    {
+        setupLogger();
+    }
     void startServer(const char *IP = "0.0.0.0",
                      const int port = 8080)
     {
-        std::cout << "Starting server at: " << IP << ":" << port << std::endl;
+        spdlog::info("Starting server at: {}:{}", IP, port);
         httplib::Server svr;
 
         svr.Post("/queue",
@@ -251,7 +320,7 @@ public:
 
                      boost::uuids::uuid uuid = boost::uuids::random_generator()();
                      const auto uuidStr = boost::lexical_cast<std::string>(uuid);
-                     std::cout << "New UUID created: " << uuidStr << std::endl;
+                     spdlog::info("New UUID created: {}", uuidStr);
 
                      auto parsed = json::parse(body);
                      parsed["uuid"] = uuidStr;
@@ -269,12 +338,11 @@ public:
 
     void observeQueue()
     {
-        std::cout << "Starting queue watch" << std::endl;
+        spdlog::info("Starting queue watch");
         while (true)
         {
             auto task = this->queue.dequeue();
-            std::cout << "Popped the task off the queue!" << std::endl;
-            std::cout << "Parsing the junction" << std::endl;
+            spdlog::info("Popped the task off the queue: {}", task.at("uuid"));
             auto j = parser.parseJunction(task);
             parseRunVSD(j, task);
         }
