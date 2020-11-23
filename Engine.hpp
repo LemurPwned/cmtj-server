@@ -291,7 +291,7 @@ private:
             {"Vmix", finalRes["Vmix"]},
         };
 
-        std::ofstream o(uuid + ".json");
+        std::ofstream o("./tmp" + uuid + ".json");
         o << std::setw(4) << response << std::endl;
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
         spdlog::info("Total result retrieval time = {} [s]", std::chrono::duration_cast<std::chrono::seconds>(end - begin).count());
