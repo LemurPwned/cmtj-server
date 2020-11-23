@@ -4,7 +4,9 @@
 #include <boost/uuid/uuid.hpp>            // uuid class
 #include <boost/uuid/uuid_generators.hpp> // generators
 #include <boost/uuid/uuid_io.hpp>         // streaming operators etc.
+#include <chrono>
 #include <junction.hpp>
+
 #include <map>
 
 #include "QueueHandler.hpp"
@@ -45,15 +47,19 @@ public:
     {
 
         std::vector<Layer> layers = {};
-
-        for (auto &layerDef : task["layers"].items())
+        std::cout << "Parsing the layers" << std::endl;
+        for (auto &layerDef : task["layers"])
         {
             Layer l;
+            std::cout << layerDef << std::endl;
             this->parseLayer(layerDef, l);
             layers.push_back(l);
         }
+        std::cout << "Finished parsing the layers" << std::endl;
 
         Junction j(layers, filename, task.value("Rp", 100), task.value("Rap", 200));
+
+        std::cout << "Parsing the drivers" << std::endl;
         for (auto driverDef : task.at("drivers"))
         {
             const auto layerD = driverDef.at("layer"); // top, free, bottom
@@ -73,6 +79,7 @@ public:
                 setScalarDriver(obj, j, layerD, dr);
             }
         }
+        std::cout << "Finished parsing the drivers" << std::endl;
         return j;
     }
 
@@ -151,20 +158,78 @@ class Engine
 private:
     SafeQueue<json> queue;
     TaskParser parser;
-    void runDispersion(Junction &j, double frequency,
-                       double Hstart, double Hstop, double Hstep,
-                       double time, double tStep, double tWrite)
+
+    void parseRunVSD(Junction &j, json vsdTask)
     {
-        for (double h = Hstart; h < Hstop; h += Hstep)
+        std::cout << "Parsing the response" << std::endl;
+        const double amplitude = vsdTask.at("vsdParams").at("amplitude").get<double>();
+        const double phase = vsdTask.at("vsdParams").at("phase").get<double>();
+        const int hsteps = vsdTask.at("vsdParams").at("hsteps").get<int>();
+
+        const auto hstartVec = vsdTask.at("vsdParams").at("Hstart").get<std::vector<double>>();
+        const auto hstepVec = vsdTask.at("vsdParams").at("Hstep").get<std::vector<double>>();
+
+        CVector hstart(hstartVec);
+        CVector hstep(hstepVec);
+
+        const int fsteps = vsdTask.at("vsdParams").at("fsteps").get<int>();
+        double fstart = vsdTask.at("vsdParams").at("frequencyStart").get<double>();
+        double fstep = vsdTask.at("vsdParams").at("frequencyStep").get<double>();
+
+        const double time = vsdTask.at("vsdParams").at("time").get<double>();
+        const double tStep = vsdTask.at("vsdParams").at("tStep").get<double>();
+        const double tWrite = vsdTask.at("vsdParams").at("tWrite").get<double>();
+        const double tStart = vsdTask.at("vsdParams").at("tStart").get<double>();
+        const double power = vsdTask.at("vsdParams").at("tStart").get<double>();
+        runVSD(vsdTask.at("uuid").get<std::string>(), j,
+               hstart, hstep, hsteps, amplitude, phase, fstart, fstep, fsteps, time, tStep, tWrite, tStart, power);
+    }
+
+    void runVSD(std::string uuid, Junction &j, CVector hstart, CVector hstep, int hsteps,
+                double amplitude, double phase,
+                double fstart, double fstep, int fsteps, double time, double tStep, double tWrite, double tStart, double power)
+    {
+        CVector hSweep = hstart;
+        double fSweep = fstart;
+        std::vector<double> frequencies, Vmix, Rpp;
+        std::vector<int> fieldSteps;
+        std::cout << "Calculating the VSD" << std::endl;
+        std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+
+        for (int k = 0; k < fsteps; k++)
         {
-            j.clearLog();
-            j.setLayerExternalFieldDriver(
-                
-            )
-            j.runSimulation(
-                time,
-                tStep, tWrite, false, false, false);
+            for (int i = 0; i < hsteps; i++)
+            {
+                j.clearLog();
+                j.setLayerExternalFieldDriver(
+                    "all",
+                    AxialDriver(
+                        ScalarDriver::getSineDriver(hSweep.x, amplitude, fSweep, phase),
+                        ScalarDriver::getConstantDriver(hSweep.y),
+                        ScalarDriver::getConstantDriver(hSweep.z)));
+                j.runSimulation(
+                    time,
+                    tStep, tWrite, false, false, false);
+
+                auto res = j.calculateVoltageSpinDiode(fSweep, power, tStart);
+                frequencies.push_back(fSweep);
+                fieldSteps.push_back(i);
+                Vmix.push_back(res["Vmix"]);
+                Rpp.push_back(res["Rpp"]);
+                hSweep = hSweep + hstep;
+            }
         }
+        fSweep += fstep;
+        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+        std::cout << "Total simulation time = " << std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() << "[s]" << std::endl;
+        json response = {
+            {"frequencies", frequencies},
+            {"fieldSteps", fieldSteps},
+            {"Vmix", Vmix},
+            {"Rpp", Rpp}};
+
+        std::ofstream o(uuid + ".json");
+        o << std::setw(4) << response << std::endl;
     }
 
 public:
@@ -184,12 +249,16 @@ public:
                          return true;
                      });
 
-                     json resp;
-                     auto parsed = json::parse(body);
-                     this->queue.enqueue(parsed);
                      boost::uuids::uuid uuid = boost::uuids::random_generator()();
                      const auto uuidStr = boost::lexical_cast<std::string>(uuid);
                      std::cout << "New UUID created: " << uuidStr << std::endl;
+
+                     auto parsed = json::parse(body);
+                     parsed["uuid"] = uuidStr;
+                     this->queue.enqueue(parsed);
+
+                     // form response
+                     json resp;
                      resp["uuid"] = uuidStr;
                      resp["message"] = "Accepted onto queue";
                      res.set_content(resp.dump(), "text/json");
@@ -205,7 +274,9 @@ public:
         {
             auto task = this->queue.dequeue();
             std::cout << "Popped the task off the queue!" << std::endl;
+            std::cout << "Parsing the junction" << std::endl;
             auto j = parser.parseJunction(task);
+            parseRunVSD(j, task);
         }
     }
 };
