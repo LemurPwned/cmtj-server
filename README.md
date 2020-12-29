@@ -49,7 +49,7 @@ The requests are accepted by the `\queue` endpoint. The form of the request look
         {
             "id": "bottom",
             "mag": [1,0,1],
-            "anis": [0, 0, 1],,
+            "anis": [0, 0, 1],
             "Ms": 1000e3,
             "thickness": 1e-9,
             "cellSurface": 1e-7,
