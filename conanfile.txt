@@ -1,0 +1,12 @@
+[requires]
+fftw/3.3.8
+spdlog/1.8.0
+nlohmann_json/3.9.1
+fmt/7.1.2
+boost/1.74.0
+cpp-httplib/0.7.15
+leveldb/1.22
+
+[generators]
+cmake_find_package
+cmake_paths
