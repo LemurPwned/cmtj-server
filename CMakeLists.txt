@@ -3,12 +3,12 @@ project(cmtj_server)
 
 set(CMAKE_CXX_STANDARD 20)
 
-find_package(Boost)
+find_package(Boost REQUIRED)
 find_package(nlohmann_json 3.2.0 REQUIRED)
 find_package (Threads)
 find_package(fmt)
-
-find_package(spdlog)
+find_package (leveldb REQUIRED)
+find_package(spdlog REQUIRED)
 find_package(OpenSSL REQUIRED)
 if( OPENSSL_FOUND )
     include_directories(${OPENSSL_INCLUDE_DIR})
@@ -17,7 +17,7 @@ endif()
 
 
 # HEADERS for the junction 
-set(LOC_DIR "~/Documents/agh/pymtj/cmtj/")
+set(LOC_DIR "~/Documents/agh/pymtj/cmtj/core")
 include_directories(${LOC_DIR})
 
 add_executable(cmtj_server
@@ -25,5 +25,5 @@ add_executable(cmtj_server
               ${LOC_DIR}/junction.hpp
               ${LOC_DIR}/drivers.hpp
               ${LOC_DIR}/cvector.hpp)
-target_link_libraries(cmtj_server PRIVATE nlohmann_json::nlohmann_json fmt::fmt)
+target_link_libraries(cmtj_server PRIVATE nlohmann_json::nlohmann_json fmt::fmt leveldb::leveldb)
  

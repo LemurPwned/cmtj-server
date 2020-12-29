@@ -11,11 +11,16 @@
 #include <map>
 #include <thread>
 
+#include "./third/httplib.h"
 #include "QueueHandler.hpp"
-#include <httplib.h>
+#include <cassert>
+#include <leveldb/db.h>
+#include <leveldb/write_batch.h>
+
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <tuple>
+
 using json = nlohmann::json;
 
 void setupLogger()
@@ -43,6 +48,58 @@ void setScalarDriver(const std::string &obj, Junction &j, const std::string &lay
         j.setLayerIECDriver(layerD, driver);
     }
 }
+
+class TaskDB
+{
+    leveldb::DB *db;
+    leveldb::Options options;
+
+public:
+    TaskDB()
+    {
+
+        this->options.create_if_missing = true;
+        leveldb::Status status = leveldb::DB::Open(options, "./testdb", &(this->db));
+        if (!status.ok())
+            spdlog::error("Status {}", status.ToString());
+        assert(status.ok());
+    }
+    void saveTaskResult(json input, json output)
+    {
+        std::string input_string = input.dump();
+        std::string output_string = output.dump();
+        std::string key = input["uuid"];
+        leveldb::WriteBatch batch;
+        batch.Put(key + "-input", input_string);
+        batch.Put(key + "-output", output_string);
+        leveldb::Status s = this->db->Write(leveldb::WriteOptions(), &batch);
+
+        spdlog::info("Status {}", s.ToString());
+    }
+
+    json retrieveTask(std::string uuid)
+    {
+        json response;
+        std::string value;
+        leveldb::Status s = this->db->Get(leveldb::ReadOptions(), uuid + "-output", &value);
+        response["status"] = s.ToString();
+        if (!s.ok())
+        {
+            response["result"] = "Fetching failed";
+        }
+        else
+        {
+            response["result"] = json::parse(value);
+        }
+        return response;
+    }
+
+    ~TaskDB()
+    {
+        delete this->db;
+    }
+};
+
 class TaskParser
 {
 public:
@@ -167,8 +224,9 @@ class Engine
 private:
     SafeQueue<json> queue;
     TaskParser parser;
+    TaskDB saver;
 
-    void parseRunVSD(Junction &j, json vsdTask)
+    json parseRunVSD(Junction &j, json vsdTask)
     {
         spdlog::info("Parsing the VSD task");
         json subTaskDef = vsdTask.at("vsdParams");
@@ -193,26 +251,26 @@ private:
         const double power = subTaskDef.at("tStart").get<double>();
 
         spdlog::info("FStart {}, FStep {}, #steps {}", fstart, fstep, fsteps);
-        runVSD(vsdTask.at("uuid").get<std::string>(), // task UUID
-               j,                                     // junction
-               hstart,                                // start ext field vector
-               hstep,                                 // step ext field vector
-               hsteps,                                // no of steps
-               amplitude,                             // amplitude of the excitation
-               phase,                                 // phase of the excitation
-               fstart,                                // start frequency
-               fstep,                                 // step frequency
-               fsteps,                                // number of freq steps
-               time,
-               tStep,
-               tWrite,
-               tStart,
-               power);
+        return runVSD(vsdTask.at("uuid").get<std::string>(), // task UUID
+                      j,                                     // junction
+                      hstart,                                // start ext field vector
+                      hstep,                                 // step ext field vector
+                      hsteps,                                // no of steps
+                      amplitude,                             // amplitude of the excitation
+                      phase,                                 // phase of the excitation
+                      fstart,                                // start frequency
+                      fstep,                                 // step frequency
+                      fsteps,                                // number of freq steps
+                      time,
+                      tStep,
+                      tWrite,
+                      tStart,
+                      power);
     }
 
     typedef std::tuple<double, std::map<std::string, double>> fnRes;
     typedef std::tuple<int, double, double> trituple;
-    void runVSD(std::string uuid, Junction &mtj, CVector hstart, CVector hstep, int hsteps,
+    json runVSD(std::string uuid, Junction &mtj, CVector hstart, CVector hstep, int hsteps,
                 double amplitude, double phase,
                 double fstart, double fstep, int fsteps, double time, double tStep, double tWrite, double tStart, double power)
     {
@@ -296,6 +354,7 @@ private:
         o << std::setw(4) << response << std::endl;
         std::chrono::steady_clock::time_point end2 = std::chrono::steady_clock::now();
         spdlog::info("Total result save time = {} [s]", std::chrono::duration_cast<std::chrono::seconds>(end2 - end).count());
+        return response;
     }
 
 public:
@@ -334,6 +393,14 @@ public:
                      res.set_content(resp.dump(), "text/json");
                  });
 
+        svr.Get("/task",
+                [&](const httplib::Request &req, httplib::Response &res) {
+                    auto uuid = req.get_param_value("uuid");
+                    spdlog::info("Attempting to retrieve {}", uuid);
+                    auto resp = saver.retrieveTask(uuid);
+                    res.set_content(resp.dump(), "text/json");
+                });
+
         svr.listen(IP, port);
     }
 
@@ -345,7 +412,9 @@ public:
             auto task = this->queue.dequeue();
             spdlog::info("Popped the task off the queue: {}", task.at("uuid"));
             auto j = parser.parseJunction(task);
-            parseRunVSD(j, task);
+            auto result = parseRunVSD(j, task);
+            spdlog::info("Attempting to save the task to the database");
+            saver.saveTaskResult(task, result);
         }
     }
 };
