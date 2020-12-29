@@ -1,9 +1,11 @@
 # CMTJ SERVER
 
-Contains the Engine from `cmtj` library to service demo requests.
-
+The processing engine and the API for some functionalities from `cmtj` library.
+Only basic services are implemented now.
+The database used is `leveldb`.
 ## Building the image
-Build the image first:
+Place all the `.hpp` files from the `cmtj` library in the folder named `third` (you need to create it in the root of the repository), so that the files may be copied into the container. 
+Build the image, using the provided Dockerfile:
 ```bash 
 docker build -t cmtj-server
 ```
@@ -11,9 +13,19 @@ Run the server:
 ```bash
 docker run -p 8080:8080 cmtj-server
 ```
+### Workflow
 
-
-The requests are accepted by the `\queue` endpoint. The form of the request looks like this:
+1. Submit a task to the `\queue` endpoint.
+    ```bash
+    curl -XPOST 'localhost:8080/queue' \
+        --header 'Content-Type: application/json' \
+        --data-raw '{....}'
+    ```
+2. Query `\task` endpoint to fetch the result. 
+    ```bash
+    curl -XGET host:8080/task?uuid=XXXXXXXXXXX
+    ```
+The task submission is of the following form:  
 ```json
 {
     "vsdParams": {
