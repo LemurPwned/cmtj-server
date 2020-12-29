@@ -27,4 +27,4 @@ add_executable(cmtj_server
               ${LOC_DIR}/junction.hpp
               ${LOC_DIR}/drivers.hpp
               ${LOC_DIR}/cvector.hpp)
-target_link_libraries(cmtj_server PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib)
+target_link_libraries(cmtj_server PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib leveldb::leveldb)
