@@ -47,6 +47,10 @@ void setScalarDriver(const std::string &obj, Junction &j, const std::string &lay
     {
         j.setLayerIECDriver(layerD, driver);
     }
+    else
+    {
+        spdlog::error("Invalid scalar driver object to set! Setting nothing!");
+    }
 }
 
 class TaskDB
@@ -74,7 +78,14 @@ public:
         batch.Put(key + "-output", output_string);
         leveldb::Status s = this->db->Write(leveldb::WriteOptions(), &batch);
 
-        spdlog::info("Status {}", s.ToString());
+        if (!s.ok())
+        {
+            spdlog::error("Error {}", s.ToString());
+        }
+        else
+        {
+            spdlog::info("Status: {}", s.ToString());
+        }
     }
 
     json retrieveTask(std::string uuid)
@@ -272,7 +283,8 @@ private:
     typedef std::tuple<int, double, double> trituple;
     json runVSD(std::string uuid, Junction &mtj, CVector hstart, CVector hstep, int hsteps,
                 double amplitude, double phase,
-                double fstart, double fstep, int fsteps, double time, double tStep, double tWrite, double tStart, double power)
+                double fstart, double fstep, int fsteps, double time,
+                double tStep, double tWrite, double tStart, double power, bool save = false)
     {
 
         double fSweep = fstart;
@@ -288,7 +300,6 @@ private:
         std::vector<std::future<std::vector<trituple>>> threadResults;
         threadResults.reserve(threadNum);
 
-        // const double threadSpacingFreq = (fstep * fsteps - fstart) / threadNum;
         const int minThreadLoad = (int)fsteps / threadNum;
         int extraThreadWorkload = fsteps % threadNum;
         spdlog::info("Min subtask load {} per thread", minThreadLoad);
@@ -350,10 +361,14 @@ private:
             {"Vmix", finalRes["Vmix"]},
         };
 
-        std::ofstream o("./tmp/" + uuid + ".json");
-        o << std::setw(4) << response << std::endl;
-        std::chrono::steady_clock::time_point end2 = std::chrono::steady_clock::now();
-        spdlog::info("Total result save time = {} [s]", std::chrono::duration_cast<std::chrono::seconds>(end2 - end).count());
+        if (save)
+        {
+            std::ofstream o("./tmp/" + uuid + ".json");
+            o << std::setw(4) << response << std::endl;
+            std::chrono::steady_clock::time_point end2 = std::chrono::steady_clock::now();
+            spdlog::info("Total result save time = {} [s]", std::chrono::duration_cast<std::chrono::seconds>(end2 - end).count());
+        }
+
         return response;
     }
 
@@ -413,7 +428,7 @@ public:
             spdlog::info("Popped the task off the queue: {}", task.at("uuid"));
             auto j = parser.parseJunction(task);
             auto result = parseRunVSD(j, task);
-            spdlog::info("Attempting to save the task to the database");
+            spdlog::info("Attempting to save the task {} to the database", task.at("uuid"));
             saver.saveTaskResult(task, result);
         }
     }
