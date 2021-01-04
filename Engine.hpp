@@ -17,6 +17,8 @@
 #include <leveldb/db.h>
 #include <leveldb/write_batch.h>
 
+#include <cmath>
+#include <exception>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <tuple>
@@ -68,6 +70,31 @@ public:
             spdlog::error("Status {}", status.ToString());
         assert(status.ok());
     }
+
+    void saveFailedTaskResult(json input, std::exception &e)
+    {
+        spdlog::info("Saving failed task info...");
+        std::string input_string = input.dump();
+        std::string key = input["uuid"];
+
+        json res;
+        res["message"] = e.what();
+        res["code"] = 304;
+
+        leveldb::WriteBatch batch;
+        batch.Put(key + "-input", input_string);
+        batch.Put(key + "-output", res.dump());
+        leveldb::Status s = this->db->Write(leveldb::WriteOptions(), &batch);
+        if (!s.ok())
+        {
+            spdlog::error("Error {}", s.ToString());
+        }
+        else
+        {
+            spdlog::info("Status: {}", s.ToString());
+        }
+    }
+
     void saveTaskResult(json input, json output)
     {
         std::string input_string = input.dump();
@@ -96,10 +123,12 @@ public:
         response["status"] = s.ToString();
         if (!s.ok())
         {
+            response["code"] = 404;
             response["result"] = "Fetching failed";
         }
         else
         {
+            response["code"] = 200;
             response["result"] = json::parse(value);
         }
         return response;
@@ -241,19 +270,21 @@ private:
     {
         spdlog::info("Parsing the VSD task");
         json subTaskDef = vsdTask.at("vsdParams");
-        const double amplitude = subTaskDef.at("amplitude").get<double>();
         const double phase = subTaskDef.at("phase").get<double>();
-        const int hsteps = subTaskDef.at("hsteps").get<int>();
 
-        const auto hstartVec = subTaskDef.at("Hstart").get<std::vector<double>>();
-        const auto hstepVec = subTaskDef.at("Hstep").get<std::vector<double>>();
+        const auto hMin = subTaskDef.at("Hmin").get<double>();
+        const auto hMax = subTaskDef.at("Hmax").get<double>();
+        const int hsteps = subTaskDef.at("Hsteps").get<int>();
 
-        CVector hstart(hstartVec);
-        CVector hstep(hstepVec);
+        const auto Hoe = subTaskDef.at("HOe").get<double>();
+        const auto HoeDir = subTaskDef.at("HOedir").get<std::vector<double>>();
+
+        const auto theta = subTaskDef.at("theta").get<double>();
+        const auto phi = subTaskDef.at("phi").get<double>();
 
         const int fsteps = subTaskDef.at("fsteps").get<int>();
-        double fstart = subTaskDef.at("frequencyStart").get<double>();
-        double fstep = subTaskDef.at("frequencyStep").get<double>();
+        double fstart = subTaskDef.at("fmin").get<double>();
+        double fstop = subTaskDef.at("fmax").get<double>();
 
         const double time = subTaskDef.at("time").get<double>();
         const double tStep = subTaskDef.at("tStep").get<double>();
@@ -261,17 +292,21 @@ private:
         const double tStart = subTaskDef.at("tStart").get<double>();
         const double power = subTaskDef.at("tStart").get<double>();
 
-        spdlog::info("FStart {}, FStep {}, #steps {}", fstart, fstep, fsteps);
+        spdlog::info("Fmin {}, Fmax {}, #steps {}", fstart, fstop, fsteps);
+        spdlog::info("Hmin {}, Hmax {}, #steps {}", hMin, hMax, hsteps);
         return runVSD(vsdTask.at("uuid").get<std::string>(), // task UUID
                       j,                                     // junction
-                      hstart,                                // start ext field vector
-                      hstep,                                 // step ext field vector
-                      hsteps,                                // no of steps
-                      amplitude,                             // amplitude of the excitation
-                      phase,                                 // phase of the excitation
-                      fstart,                                // start frequency
-                      fstep,                                 // step frequency
-                      fsteps,                                // number of freq steps
+                      Hoe,
+                      CVector(HoeDir), // start ext field vector
+                      hMin,
+                      hMax,
+                      theta,  // out of plane angle
+                      phi,    // in plane angle
+                      hsteps, // step ext field vector
+                      phase,  // phase of the excitation
+                      fstart, // start frequency
+                      fstop,  // stop frequency
+                      fsteps, // number of freq steps
                       time,
                       tStep,
                       tWrite,
@@ -281,15 +316,15 @@ private:
 
     typedef std::tuple<double, std::map<std::string, double>> fnRes;
     typedef std::tuple<int, double, double> trituple;
-    json runVSD(std::string uuid, Junction &mtj, CVector hstart, CVector hstep, int hsteps,
-                double amplitude, double phase,
-                double fstart, double fstep, int fsteps, double time,
+    json runVSD(std::string uuid, Junction &mtj, double Hoe, CVector HoeDir, double hMin,
+                double hMax, double theta, double phi, int hsteps,
+                double phase,
+                double fstart, double fstop, int fsteps, double time,
                 double tStep, double tWrite, double tStart, double power, bool save = false)
     {
 
-        double fSweep = fstart;
-        // std::vector<double> frequencies, Vmix, Rpp;
-        // std::vector<int> fieldSteps;
+        double fstep = (fstop - fstart) / fsteps;
+        double hstep = (hMax - hMin) / hsteps;
         spdlog::info("Calculating the VSD");
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
@@ -313,23 +348,34 @@ private:
             }
             const double threadMinFreq = fstart + t * fstep;
             const double threadMaxFreq = fstart + (t + 1) * fstep;
-            // const int threadFreqSteps = t*
+
             spdlog::info("Launching thread {} with freq => {} to {}, load {}", t, threadMinFreq, threadMaxFreq, threadLoad);
             threadResults.emplace_back(std::async([=]() mutable {
                 std::vector<trituple> resAcc;
                 int freqIndx = 0;
                 for (double freq = threadMinFreq; freqIndx < threadLoad; freq += fstep)
                 {
-                    CVector hSweep = hstart;
                     for (int i = 0; i < hsteps; i++)
                     {
+                        const double hAmplitude = hMin + i * hstep;
+
+                        const AxialDriver HDriver(
+                            ScalarDriver::getConstantDriver(hAmplitude * sin(theta) * cos(phi)),
+                            ScalarDriver::getConstantDriver(hAmplitude * sin(theta) * sin(phi)),
+                            ScalarDriver::getConstantDriver(hAmplitude * cos(theta)));
+
+                        const AxialDriver HoeDriver(
+                            ScalarDriver::getSineDriver(0, HoeDir.x * Hoe, freq, phase),
+                            ScalarDriver::getSineDriver(0, HoeDir.y * Hoe, freq, phase),
+                            ScalarDriver::getSineDriver(0, HoeDir.z * Hoe, freq, phase));
+
                         mtj.clearLog();
                         mtj.setLayerExternalFieldDriver(
                             "all",
-                            AxialDriver(
-                                ScalarDriver::getSineDriver(hSweep.x, amplitude, freq, phase),
-                                ScalarDriver::getConstantDriver(hSweep.y),
-                                ScalarDriver::getConstantDriver(hSweep.z)));
+                            HDriver);
+                        mtj.setLayerOerstedFieldDriver(
+                            "all",
+                            HoeDriver);
                         mtj.runSimulation(
                             time,
                             tStep, tWrite, false, false, false);
@@ -426,10 +472,19 @@ public:
         {
             auto task = this->queue.dequeue();
             spdlog::info("Popped the task off the queue: {}", task.at("uuid"));
-            auto j = parser.parseJunction(task);
-            auto result = parseRunVSD(j, task);
-            spdlog::info("Attempting to save the task {} to the database", task.at("uuid"));
-            saver.saveTaskResult(task, result);
+            try
+            {
+                auto j = parser.parseJunction(task);
+
+                auto result = parseRunVSD(j, task);
+                spdlog::info("Attempting to save the task {} to the database", task.at("uuid"));
+                saver.saveTaskResult(task, result);
+            }
+            catch (std::exception &e)
+            {
+                spdlog::error("Error occured {}! Abandoning task!", e.what());
+                saver.saveFailedTaskResult(task, e);
+            }
         }
     }
 };
