@@ -21,77 +21,16 @@ docker run -p 8080:8080 cmtj-server
         --header 'Content-Type: application/json' \
         --data-raw '{....}'
     ```
+    The response will look like so:
+    ```json
+    {
+        "message": "Accepted onto queue",
+        "uuid": "8b9a5da6-b9c1-4687-9b98-b516b3700bb3"
+    }
+    ```
+    Use that `uuid` to query for the result of the task.
 2. Query `\task` endpoint to fetch the result. 
     ```bash
     curl -XGET host:8080/task?uuid=XXXXXXXXXXX
     ```
-The task submission is of the following form:  
-```json
-{
-    "vsdParams": {
-        "amplitude": 10,
-        "phase": 0,
-        "frequencyStart": 7e9,
-        "frequencyStep": 0.5e9,
-        "fsteps": 10,
-        "Hstart": [0,0,0],
-        "Hstep": [0, 0, 1],
-        "hsteps": 50,
-        "time": 20e-9,
-        "tStep": 1e-13,
-        "tWrite": 1e-11,
-        "tStart": 5e-9,
-        "power": 10e-6
-    },
-    "drivers": [
-        {
-            "object": "anisotropy",
-            "layer": "bottom",
-            "subtype": "constant",
-            "constantValue": 1500e3
-        },
-        {
-            "object": "anisotropy",
-            "layer": "free",
-            "subtype": "constant",
-            "constantValue": 650e3
-        }
-    ],
-    "layers": [
-        {
-            "id": "bottom",
-            "mag": [1,0,1],
-            "anis": [0, 0, 1],
-            "Ms": 1000e3,
-            "thickness": 1e-9,
-            "cellSurface": 1e-7,
-            "demagTensor": [...],
-            "dipoleTensor": [...],
-            "temperature": 0,
-            "includeSTT": false,
-            "damping": 0.011,
-            "currentDensity": 0,
-            "SlonczewskiSpacerLayerParameter": 1,
-            "beta": 0,
-            "spinPolarisation": 0
-        },
-        {
-            "id": "free",
-            "mag": [1,0,1],
-            "anis": [0, 0, 1],
-            "Ms": 1200e3,
-            "thickness": 1e-9,
-            "cellSurface": 1e-7,
-            "demagTensor": [...],
-            "dipoleTensor": [...],
-            "temperature": 0,
-            "includeSTT": false,
-            "damping": 0.011,
-            "currentDensity": 0,
-            "SlonczewskiSpacerLayerParameter": 1,
-            "beta": 0,
-            "spinPolarisation": 0
-        }
-    ]
-}
-```
+See Postman collection for examples of use.
