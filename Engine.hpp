@@ -48,8 +48,6 @@ private:
     {
         spdlog::info("Parsing the PIM task");
         json subTaskDef = pimTask.at("parameters");
-        const double phase = subTaskDef.at("phase").get<double>();
-
         const auto hMin = subTaskDef.at("Hmin").get<double>();
         const auto hMax = subTaskDef.at("Hmax").get<double>();
         const int hsteps = subTaskDef.at("Hsteps").get<int>();
@@ -66,22 +64,20 @@ private:
         const double tStep = subTaskDef.at("tStep").get<double>();
         const double tWrite = subTaskDef.at("tWrite").get<double>();
         const double tStart = subTaskDef.at("tStart").get<double>();
-        const double tMin = subTaskDef.at("tMin").get<double>();
 
         return runPIM(pimTask.at("uuid").get<std::string>(), j,
                       HoePulseAmplitude, pulseStart, pulseStop, CVector(HoeDir),
                       hMin, hMax, theta, phi, hsteps,
-                      time, tStep, tWrite, tStart, tMin);
+                      time, tStep, tWrite, tStart);
     }
 
     json runPIM(std::string uuid, Junction &mtj,
                 double HoePulseAmplitude, double pulseStart, double pulseStop, CVector HoeDir,
                 double hMin, double hMax, double theta, double phi, int hsteps,
-                double time, double tStep, double tWrite, double tStart, double tMin)
+                double time, double tStep, double tWrite, double tStart)
     {
 
         typedef std::tuple<double, std::map<std::string, std::vector<double>>> intermediateRes;
-        typedef std::tuple<double, std::map<std::string, double>> PIMRes;
         const double hstep = (hMax - hMin) / hsteps;
         spdlog::info("Calculating the PIM");
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
@@ -95,17 +91,21 @@ private:
 
         const int minThreadLoad = (int)hsteps / threadNum;
         int extraThreadWorkload = hsteps % threadNum;
-        spdlog::info("Min subtask load {} per thread", minThreadLoad);
+        spdlog::debug("Min subtask load {} per thread", minThreadLoad);
+        int lastThreadLoadIndx = 0;
+
         for (int t = 0; t < threadNum; t++)
         {
             int threadLoad = minThreadLoad;
             if (extraThreadWorkload)
             {
                 threadLoad += 1;
+                // TODO: think about this -- whether we actually want an even workload
                 extraThreadWorkload--;
             }
-            const double threadMinH = hMin + t * hstep;
-            const double threadMaxH = hMin + (t + 1) * hstep;
+            const double threadMinH = hMin + lastThreadLoadIndx * hstep;
+            lastThreadLoadIndx += threadLoad;
+            const double threadMaxH = hMin + lastThreadLoadIndx * hstep;
 
             spdlog::debug("Launching thread {} with Hs => {} to {}, load {}", t, threadMinH, threadMaxH, threadLoad);
             threadResults.emplace_back(std::async([=]() mutable {
@@ -136,8 +136,8 @@ private:
                         time,
                         tStep, tWrite, false, false, false);
 
-                    const auto res = mtj.spectralFFT(tStart, tMin);
-                    resAcc.push_back({hAmplitude, std::move(res)});
+                    auto resTuple = std::make_tuple(hAmplitude, mtj.spectralFFT(tStart, tStep));
+                    resAcc.push_back(std::move(resTuple));
                 }
                 return resAcc;
             }));
@@ -146,14 +146,14 @@ private:
         const std::vector<std::string> mags = {"x", "y", "z"};
         for (auto &result : threadResults)
         {
-            for (const auto [hAmpl, resMap] : result.get())
+            for (auto [hAmpl, resMap] : result.get())
             {
                 json subresult;
                 subresult["hAmpl"] = std::move(hAmpl);
                 for (const auto &mag : mags)
                 {
-                    // subresult[mag + "_amplitudes"] = resMap[mag + "_amplitude"];
-                    // subresult[mag + "_phases"] = resMap[mag + "_phase"];
+                    subresult[mag + "_amplitude"] = std::move(resMap[mag + "_amplitude"]);
+                    subresult[mag + "_phase"] = std::move(resMap[mag + "_phase"]);
                 }
                 finalRes["results"].push_back(std::move(subresult));
             }
@@ -219,10 +219,10 @@ private:
     {
 
         typedef std::tuple<double, std::map<std::string, double>> fnRes;
-        typedef std::tuple<int, double, double> trituple;
+        typedef std::tuple<double, double, double, CVector, CVector> multituple;
 
-        double fstep = (fstop - fstart) / fsteps;
-        double hstep = (hMax - hMin) / hsteps;
+        double fstep = ((fstop - fstart) / fsteps);
+        double hstep = ((hMax - hMin) / hsteps);
         spdlog::info("Calculating the VSD");
         spdlog::debug("Fmin {}, Fmax {}, #steps {}, step {} MHz", fstart, fstop, fsteps, (fstep / 1e6));
         spdlog::debug("Hmin {}, Hmax {}, #steps {}, step {}", hMin, hMax, hsteps, hstep);
@@ -232,20 +232,21 @@ private:
         const int threadNum = std::thread::hardware_concurrency() - 1;
         spdlog::debug("Using {} threads to distribute the task workload!", threadNum);
 
-        std::vector<std::future<std::vector<trituple>>> threadResults;
+        std::vector<std::future<std::vector<multituple>>> threadResults;
         threadResults.reserve(threadNum);
 
         const int minThreadLoad = (int)fsteps / threadNum;
         int extraThreadWorkload = fsteps % threadNum;
         int lastThreadLoadIndx = 0;
-        spdlog::info("Min subtask load {} per thread", minThreadLoad);
+        spdlog::debug("Min subtask load {} per thread", minThreadLoad);
         for (int t = 0; t < threadNum; t++)
         {
             int threadLoad = minThreadLoad;
             if (extraThreadWorkload)
             {
                 threadLoad += 1;
-                extraThreadWorkload--;
+                // TODO: think about this -- whether we actually want an even workload
+                // extraThreadWorkload--;
             }
             const double threadMinFreq = fstart + lastThreadLoadIndx * fstep;
             lastThreadLoadIndx += threadLoad;
@@ -256,23 +257,22 @@ private:
                          (threadMaxFreq / 1e6),
                          threadLoad);
             threadResults.emplace_back(std::async([=]() mutable {
-                std::vector<trituple> resAcc;
+                std::vector<multituple> resAcc;
+
                 int freqIndx = 0;
                 for (double freq = threadMinFreq; freqIndx < threadLoad; freq += fstep)
                 {
-                    for (int i = 0; i < hsteps; i++)
-                    {
-                        const double hAmplitude = hMin + i * hstep;
+                    const AxialDriver HoeDriver(
+                        ScalarDriver::getSineDriver(0, HoeDir.x * Hoe, freq, phase),
+                        ScalarDriver::getSineDriver(0, HoeDir.y * Hoe, freq, phase),
+                        ScalarDriver::getSineDriver(0, HoeDir.z * Hoe, freq, phase));
 
+                    for (double hAmplitude = hMin; hAmplitude < hMax; hAmplitude += hstep)
+                    {
                         const AxialDriver HDriver(
                             ScalarDriver::getConstantDriver(hAmplitude * sin(theta) * cos(phi)),
                             ScalarDriver::getConstantDriver(hAmplitude * sin(theta) * sin(phi)),
                             ScalarDriver::getConstantDriver(hAmplitude * cos(theta)));
-
-                        const AxialDriver HoeDriver(
-                            ScalarDriver::getSineDriver(0, HoeDir.x * Hoe, freq, phase),
-                            ScalarDriver::getSineDriver(0, HoeDir.y * Hoe, freq, phase),
-                            ScalarDriver::getSineDriver(0, HoeDir.z * Hoe, freq, phase));
 
                         mtj.clearLog();
                         mtj.setLayerExternalFieldDriver(
@@ -286,8 +286,9 @@ private:
                             tStep, tWrite, false, false, false);
 
                         auto res = mtj.calculateVoltageSpinDiode(freq, power, tStart);
-                        // Take last m value
-                        auto resTuple = std::make_tuple(hAmplitude, freq, res["Vmix"]);
+                        // Take last m value as well
+                        auto resTuple = std::make_tuple(hAmplitude, freq, res["Vmix"],
+                                                        mtj.layers[0].mag, mtj.layers[1].mag);
                         resAcc.push_back(resTuple);
                     }
                     freqIndx += 1;
@@ -295,26 +296,24 @@ private:
                 return resAcc;
             }));
         }
-        std::map<std::string, std::vector<double>> finalRes;
+        json finalRes;
         for (auto &result : threadResults)
         {
-            for (const auto [h, freq, vmix] : result.get())
+            for (const auto [h, freq, vmix, l1mag, l2mag] : result.get())
             {
                 finalRes["H"].push_back(std::move(h));
                 finalRes["frequencies"].push_back(std::move(freq));
                 finalRes["Vmix"].push_back(std::move(vmix));
+                finalRes["mags_1"].push_back({l1mag.x, l1mag.y, l1mag.z});
+                finalRes["mags_2"].push_back({l2mag.x, l2mag.y, l2mag.z});
             }
         }
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
         spdlog::info("Total result retrieval time = {} [s]", std::chrono::duration_cast<std::chrono::seconds>(end - begin).count());
-        json response = {
-            {"frequencies", finalRes["frequencies"]},
-            {"H", finalRes["H"]},
-            {"Vmix", finalRes["Vmix"]},
-            {"hsteps", hsteps},
-            {"fsteps", fsteps}};
+        finalRes["hsteps"] = std::move(hsteps);
+        finalRes["fsteps"] = std::move(fsteps);
 
-        return response;
+        return finalRes;
     }
 
 public:
@@ -374,7 +373,20 @@ public:
             try
             {
                 auto j = parser.parseJunction(task);
-                auto result = parseRunVSD(j, task);
+                const auto taskType = task.at("task").get<std::string>();
+                json result;
+                if (taskType == "pim")
+                {
+                    result = parseRunPIM(j, task);
+                }
+                else if (taskType == "vsd")
+                {
+                    result = parseRunVSD(j, task);
+                }
+                else
+                {
+                    throw std::runtime_error("Unknown task type passed! Aborting!");
+                }
                 spdlog::info("Attempting to save the task {} to the database", task.at("uuid"));
                 saver.saveTaskResult(task, result);
             }

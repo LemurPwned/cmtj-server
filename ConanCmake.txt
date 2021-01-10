@@ -5,6 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 
 include(${CMAKE_BINARY_DIR}/conan_paths.cmake)
 
+find_library(
+        fftw3
+        NAMES fftw lfftw3 libfftw3
+        HINTS /usr/local/lib /usr/local/include
+)
+
 find_package(Boost)
 find_package(nlohmann_json 3.2.0 REQUIRED)
 find_package (Threads)
@@ -27,4 +33,4 @@ add_executable(cmtj_server
               ${LOC_DIR}/junction.hpp
               ${LOC_DIR}/drivers.hpp
               ${LOC_DIR}/cvector.hpp)
-target_link_libraries(cmtj_server PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib leveldb::leveldb)
+target_link_libraries(cmtj_server PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib leveldb::leveldb fftw3 fftwpp)
