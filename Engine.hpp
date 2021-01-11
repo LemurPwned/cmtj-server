@@ -101,7 +101,7 @@ private:
             {
                 threadLoad += 1;
                 // TODO: think about this -- whether we actually want an even workload
-                extraThreadWorkload--;
+                // extraThreadWorkload--;
             }
             const double threadMinH = hMin + lastThreadLoadIndx * hstep;
             lastThreadLoadIndx += threadLoad;
@@ -110,8 +110,8 @@ private:
             spdlog::debug("Launching thread {} with Hs => {} to {}, load {}", t, threadMinH, threadMaxH, threadLoad);
             threadResults.emplace_back(std::async([=]() mutable {
                 std::vector<intermediateRes> resAcc;
-                int freqIndx = 0;
-                for (double hAmplitude = threadMinH; hAmplitude < threadLoad; hAmplitude += hstep)
+                int hIndx = 0;
+                for (double hAmplitude = threadMinH; hIndx < threadLoad; hAmplitude += hstep)
                 {
                     const AxialDriver HDriver(
                         ScalarDriver::getConstantDriver(hAmplitude * sin(theta) * cos(phi)),
@@ -138,24 +138,28 @@ private:
 
                     auto resTuple = std::make_tuple(hAmplitude, mtj.spectralFFT(tStart, tStep));
                     resAcc.push_back(std::move(resTuple));
+                    hIndx++;
                 }
                 return resAcc;
             }));
         }
         json finalRes;
         const std::vector<std::string> mags = {"x", "y", "z"};
+        bool pushedFrequencies = false;
         for (auto &result : threadResults)
         {
             for (auto [hAmpl, resMap] : result.get())
             {
                 json subresult;
                 subresult["hAmpl"] = std::move(hAmpl);
-                for (const auto &mag : mags)
+                subresult["amplitude"] = std::move(resMap["amplitude"]);
+                subresult["phase"] = std::move(resMap["phase"]);
+                if (!pushedFrequencies)
                 {
-                    subresult[mag + "_amplitude"] = std::move(resMap[mag + "_amplitude"]);
-                    subresult[mag + "_phase"] = std::move(resMap[mag + "_phase"]);
+                    finalRes["frequencies"] = std::move(resMap["frequencies"]);
+                    pushedFrequencies = true;
                 }
-                finalRes["results"].push_back(std::move(subresult));
+                finalRes["pim"].push_back(std::move(subresult));
             }
         }
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
@@ -291,7 +295,7 @@ private:
                                                         mtj.layers[0].mag, mtj.layers[1].mag);
                         resAcc.push_back(resTuple);
                     }
-                    freqIndx += 1;
+                    freqIndx++;
                 }
                 return resAcc;
             }));

@@ -29,12 +29,11 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${findFFTW_DIR}")
 
 
 
-
 find_package(Boost REQUIRED)
 find_package(nlohmann_json 3.2.0 REQUIRED)
 find_package (Threads)
 find_package(fmt)
-find_package(fftw)
+find_package(FFTW REQUIRED)
 find_package (leveldb REQUIRED)
 find_package(spdlog REQUIRED)
 # find_package(OpenSSL REQUIRED)
@@ -50,8 +49,9 @@ include_directories(${LOC_DIR})
 
 add_executable(cmtj_server
               main.cpp
+              ${FFTW_INCLUDE_DIRS}
               ${LOC_DIR}/junction.hpp
               ${LOC_DIR}/drivers.hpp
               ${LOC_DIR}/cvector.hpp)
-target_link_libraries(cmtj_server PRIVATE nlohmann_json::nlohmann_json fmt::fmt leveldb::leveldb ${FFTW_LIBRARIES})
+target_link_libraries(cmtj_server nlohmann_json::nlohmann_json fmt::fmt leveldb::leveldb ${FFTW_DOUBLE_LIB} ${FFTW_DOUBLE_THREADS_LIB})
  
