@@ -3,23 +3,24 @@ FROM ubuntu:20.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y python3 python3-pip gcc cmake build-essential \
-                                vim git libboost-all-dev libfftw3-dev nlohmann-json3-dev libssl-dev libleveldb-dev
+                                vim git libssl-dev
+# libboost-all-dev libfftw3-dev nlohmann-json3-dev libssl-dev libleveldb-dev
 WORKDIR /app 
 COPY *.hpp *.cpp conanfile.txt /app/
-COPY third/*.hpp /app/
-RUN sed -i '/".\/third\/httplib.h"/c\#include <httplib.h>' /app/Engine.hpp
+COPY third/*.hpp /app/third/
 
 COPY ConanCmake.txt /app/CMakeLists.txt
 RUN pip3 install conan && conan profile new default --detect && \
     conan profile update settings.compiler.libcxx=libstdc++11 default
-RUN git clone https://github.com/gabime/spdlog.git && \
-    cd spdlog && mkdir build && cd build && \
-    cmake .. && make -j
+# RUN git clone https://github.com/gabime/spdlog.git && \
+#     cd spdlog && mkdir build && cd build && \
+#     cmake .. && make -j
 
+RUN sed -i '/".\/third\/httplib.h"/c\#include <httplib.h>' /app/Engine.hpp && \
+    sed -i '/".\/third\/httplib.h"/c\#include <httplib.h>' /app/TaskParser.hpp
 
-RUN mkdir build && cd build && conan install .. && \
-    cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build .
+RUN mkdir build && cd build && conan install .. --build missing
+RUN cd build && cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release && cmake --build .
 
 EXPOSE 8080 
-ENTRYPOINT [ "/app/build/cmtj_server" ]
+ENTRYPOINT [ "/app/build/bin/cmtj_server" ]

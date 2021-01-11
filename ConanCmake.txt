@@ -3,29 +3,11 @@ project(cmtj_server)
 
 set(CMAKE_CXX_STANDARD 17)
 
-include(${CMAKE_BINARY_DIR}/conan_paths.cmake)
-
-find_library(
-        fftw3
-        NAMES fftw lfftw3 libfftw3
-        HINTS /usr/local/lib /usr/local/include
-)
-
-find_package(Boost)
-find_package(nlohmann_json 3.2.0 REQUIRED)
-find_package (Threads)
-find_package(fmt)
-find_package (leveldb REQUIRED)
-find_package(httplib REQUIRED)
-find_package(spdlog REQUIRED)
-find_package(OpenSSL REQUIRED)
-if( OPENSSL_FOUND )
-    include_directories(${OPENSSL_INCLUDE_DIR})
-    message(STATUS "Using OpenSSL ${OPENSSL_VERSION}")
-endif()
+include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
+conan_basic_setup()
 
 # HEADERS for the junction 
-set(LOC_DIR "/app/")
+set(LOC_DIR "/app/third")
 include_directories(${LOC_DIR})
 
 add_executable(cmtj_server
@@ -33,4 +15,4 @@ add_executable(cmtj_server
               ${LOC_DIR}/junction.hpp
               ${LOC_DIR}/drivers.hpp
               ${LOC_DIR}/cvector.hpp)
-target_link_libraries(cmtj_server PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib leveldb::leveldb fftw3 fftwpp)
+target_link_libraries(cmtj_server PRIVATE ${CONAN_LIBS})                                            

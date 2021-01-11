@@ -8,5 +8,7 @@ cpp-httplib/0.7.15
 leveldb/1.22
 
 [generators]
-cmake_find_package
-cmake_paths
+cmake
+
+[options]
+fftw:threads=True
