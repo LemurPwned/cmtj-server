@@ -69,15 +69,15 @@ private:
         {
             if (mode == MAG)
             {
-                Hmag += v;
+                Hmag = v;
             }
             else if (mode == THETA)
             {
-                theta += v;
+                theta = v;
             }
             else if (mode == PHI)
             {
-                phi += v;
+                phi = v;
             }
             H.push_back(CVector(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) * Hmag);
         }
@@ -173,11 +173,11 @@ private:
             lastItIndx = threadMax;
             spdlog::debug("Launching thread {} with {} => {} to {}, load {}", t, s_mode,
                           std::distance(Hdistribution.begin(), threadMin),
-                          std::distance(Hdistribution.begin(), threadMax)-1, threadLoad);
+                          std::distance(Hdistribution.begin(), threadMax) - 1, threadLoad);
             // the iterator never reaches the threadMax in the last loop
             spdlog::debug("Launching thread {} with {} => {} to {}, load {}", t, s_mode,
                           itValues[std::distance(Hdistribution.begin(), threadMin)],
-                          itValues[std::distance(Hdistribution.begin(), threadMax)-1], threadLoad);
+                          itValues[std::distance(Hdistribution.begin(), threadMax) - 1], threadLoad);
             threadResults.emplace_back(std::async([=]() mutable {
                 std::vector<intermediateRes> resAcc;
                 for (auto itVal = threadMin; itVal != threadMax; itVal++)
@@ -247,16 +247,20 @@ private:
         json subTaskDef = vsdTask.at("parameters");
         const double phase = subTaskDef.at("phase").get<double>();
 
-        const auto hMin = subTaskDef.at("Hmin").get<double>();
-        const auto hMax = subTaskDef.at("Hmax").get<double>();
-        const int hsteps = subTaskDef.at("Hsteps").get<int>();
-
         const auto Hoe = subTaskDef.at("HOe").get<double>();
         const auto HoeDir = subTaskDef.at("HOedir").get<std::vector<double>>();
 
-        // convert the angle to radians
+        const auto vMin = subTaskDef.at("Vmin").get<double>();
+        const auto vMax = subTaskDef.at("Vmax").get<double>();
+        const int steps = subTaskDef.at("steps").get<int>();
+
+        const auto Hmag = subTaskDef.at("Hmag").get<double>();
         const auto theta = subTaskDef.at("theta").get<double>() * M_PI / 180;
         const auto phi = subTaskDef.at("phi").get<double>() * M_PI / 180;
+
+        auto s_mode = subTaskDef.at("mode").get<std::string>();
+        boost::algorithm::to_lower(s_mode);
+        spdlog::debug("Mode detected: scanning with {}", s_mode);
 
         const int fsteps = subTaskDef.at("fsteps").get<int>();
         double fstart = subTaskDef.at("fmin").get<double>();
@@ -272,11 +276,13 @@ private:
                       j,                                     // junction
                       Hoe,
                       CVector(HoeDir), // start ext field vector
-                      hMin,
-                      hMax,
-                      theta,  // out of plane angle
-                      phi,    // in plane angle
-                      hsteps, // step ext field vector
+                      Hmag,
+                      vMin,
+                      vMax,
+                      theta, // out of plane angle
+                      phi,   // in plane angle
+                      steps, // step ext field vector
+                      s_mode,
                       phase,  // phase of the excitation
                       fstart, // start frequency
                       fstop,  // stop frequency
@@ -288,25 +294,44 @@ private:
                       power);
     }
 
-    json runVSD(std::string uuid, Junction &mtj, double Hoe, CVector HoeDir, double hMin,
-                double hMax, double theta, double phi, int hsteps,
+    json runVSD(std::string uuid, Junction &mtj, double Hoe, CVector HoeDir, double Hmag, double vMin,
+                double vMax, double theta, double phi, int steps, std::string s_mode,
                 double phase,
                 double fstart, double fstop, int fsteps, double time,
                 double tStep, double tWrite, double tStart, double power)
     {
 
+        H_MODE mode;
+        if (s_mode == "phi")
+        {
+            mode = PHI;
+        }
+        else if (s_mode == "theta")
+        {
+            mode = THETA;
+        }
+        else if (s_mode == "mag" || s_mode == "magnitude")
+        {
+            mode = MAG;
+        }
+
         typedef std::tuple<double, std::map<std::string, double>> fnRes;
         typedef std::tuple<double, double, double, CVector, CVector> multituple;
 
         double fstep = ((fstop - fstart) / fsteps);
-        double hstep = ((hMax - hMin) / hsteps);
         spdlog::info("Calculating the VSD");
+
+        Hspace HspaceVals = calculateHdistribution(Hmag, theta, phi, vMin, vMax, steps, mode);
+        const auto Hdistribution = std::get<0>(HspaceVals);
+        const auto itValues = std::get<1>(HspaceVals);
+        const auto step = std::get<2>(HspaceVals);
+        spdlog::debug("Vmin {}, Vmax {}, #steps {}, step {}", vMin, vMax, steps, step);
         spdlog::debug("Fmin {}, Fmax {}, #steps {}, step {} MHz", fstart, fstop, fsteps, (fstep / 1e6));
-        spdlog::debug("Hmin {}, Hmax {}, #steps {}, step {}", hMin, hMax, hsteps, hstep);
+
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
         // distribute the frequencies
-        const int threadNum = std::thread::hardware_concurrency() - 1;
+        const int threadNum = std::thread::hardware_concurrency();
         spdlog::debug("Using {} threads to distribute the task workload!", threadNum);
 
         std::vector<std::future<std::vector<multituple>>> threadResults;
@@ -323,7 +348,7 @@ private:
             {
                 threadLoad += 1;
                 // TODO: think about this -- whether we actually want an even workload
-                // extraThreadWorkload--;
+                extraThreadWorkload--;
             }
             const double threadMinFreq = fstart + lastThreadLoadIndx * fstep;
             lastThreadLoadIndx += threadLoad;
@@ -344,12 +369,13 @@ private:
                         ScalarDriver::getSineDriver(0, HoeDir.y * Hoe, freq, phase),
                         ScalarDriver::getSineDriver(0, HoeDir.z * Hoe, freq, phase));
 
-                    for (double hAmplitude = hMin; hAmplitude < hMax; hAmplitude += hstep)
+                    for (int i = 0; i < Hdistribution.size(); i++)
                     {
+                        auto h = Hdistribution[i];
                         const AxialDriver HDriver(
-                            ScalarDriver::getConstantDriver(hAmplitude * sin(theta) * cos(phi)),
-                            ScalarDriver::getConstantDriver(hAmplitude * sin(theta) * sin(phi)),
-                            ScalarDriver::getConstantDriver(hAmplitude * cos(theta)));
+                            ScalarDriver::getConstantDriver(h.x),
+                            ScalarDriver::getConstantDriver(h.y),
+                            ScalarDriver::getConstantDriver(h.z));
 
                         mtj.clearLog();
                         mtj.setLayerExternalFieldDriver(
@@ -364,7 +390,7 @@ private:
 
                         auto res = mtj.calculateVoltageSpinDiode(freq, power, tStart);
                         // Take last m value as well
-                        auto resTuple = std::make_tuple(hAmplitude, freq, res["Vmix"],
+                        auto resTuple = std::make_tuple(itValues[i], freq, res["Vmix"],
                                                         mtj.layers[0].mag, mtj.layers[1].mag);
                         resAcc.push_back(resTuple);
                     }
@@ -376,9 +402,9 @@ private:
         json finalRes;
         for (auto &result : threadResults)
         {
-            for (const auto [h, freq, vmix, l1mag, l2mag] : result.get())
+            for (const auto [mode_value, freq, vmix, l1mag, l2mag] : result.get())
             {
-                finalRes["H"].push_back(std::move(h));
+                finalRes[s_mode].push_back(std::move(mode_value));
                 finalRes["frequencies"].push_back(std::move(freq));
                 finalRes["Vmix"].push_back(std::move(vmix));
                 finalRes["mags_1"].push_back({l1mag.x, l1mag.y, l1mag.z});
@@ -387,7 +413,7 @@ private:
         }
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
         spdlog::info("Total result retrieval time = {} [s]", std::chrono::duration_cast<std::chrono::seconds>(end - begin).count());
-        finalRes["hsteps"] = std::move(hsteps);
+        finalRes["steps"] = std::move(steps);
         finalRes["fsteps"] = std::move(fsteps);
 
         return finalRes;
