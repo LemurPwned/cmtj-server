@@ -1,5 +1,6 @@
 #include <iostream>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/uuid/uuid.hpp>            // uuid class
 #include <boost/uuid/uuid_generators.hpp> // generators
@@ -44,21 +45,65 @@ private:
     TaskParser parser;
     TaskDB saver;
 
+    enum H_MODE
+    {
+        MAG = 1,
+        THETA,
+        PHI
+    };
+
+    typedef std::tuple<std::vector<CVector>, std::vector<double>, double> Hspace;
+    Hspace calculateHdistribution(double Hmag, double theta, double phi,
+                                  double minVal, double maxVal, int steps, H_MODE mode)
+    {
+        std::vector<CVector> H;
+        double step = (maxVal - minVal) / steps;
+        std::vector<double> valueSpace; //# (steps);
+        for (int i = 0; i < steps; i++)
+        {
+            valueSpace.push_back(minVal + step * i);
+        }
+        // int n = 0;
+        // std::generate(valueSpace.begin(), valueSpace.end(), [&n, &step]() mutable { return step * n++; });
+        for (const auto &v : valueSpace)
+        {
+            if (mode == MAG)
+            {
+                Hmag += v;
+            }
+            else if (mode == THETA)
+            {
+                theta += v;
+            }
+            else if (mode == PHI)
+            {
+                phi += v;
+            }
+            H.push_back(CVector(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) * Hmag);
+        }
+        return std::make_tuple(H, valueSpace, step);
+    }
+
     json parseRunPIM(Junction &j, json pimTask)
     {
         spdlog::info("Parsing the PIM task");
         json subTaskDef = pimTask.at("parameters");
-        const auto hMin = subTaskDef.at("Hmin").get<double>();
-        const auto hMax = subTaskDef.at("Hmax").get<double>();
-        const int hsteps = subTaskDef.at("Hsteps").get<int>();
+        const auto vMin = subTaskDef.at("Vmin").get<double>();
+        const auto vMax = subTaskDef.at("Vmax").get<double>();
+        const int steps = subTaskDef.at("steps").get<int>();
+
+        const auto Hmag = subTaskDef.at("Hmag").get<double>();
+        const auto theta = subTaskDef.at("theta").get<double>() * M_PI / 180;
+        const auto phi = subTaskDef.at("phi").get<double>() * M_PI / 180;
+
+        auto s_mode = subTaskDef.at("mode").get<std::string>();
+        boost::algorithm::to_lower(s_mode);
+        spdlog::debug("Mode detected: scanning with {}", s_mode);
 
         const auto HoePulseAmplitude = subTaskDef.at("HOePulseAmplitude").get<double>();
         const auto HoeDir = subTaskDef.at("HOedir").get<std::vector<double>>();
         const auto pulseStart = subTaskDef.at("pulseStart").get<double>();
         const auto pulseStop = subTaskDef.at("pulseStop").get<double>();
-
-        const auto theta = subTaskDef.at("theta").get<double>() * M_PI / 180;
-        const auto phi = subTaskDef.at("phi").get<double>() * M_PI / 180;
 
         const double time = subTaskDef.at("time").get<double>();
         const double tStep = subTaskDef.at("tStep").get<double>();
@@ -67,33 +112,52 @@ private:
 
         return runPIM(pimTask.at("uuid").get<std::string>(), j,
                       HoePulseAmplitude, pulseStart, pulseStop, CVector(HoeDir),
-                      hMin, hMax, theta, phi, hsteps,
+                      vMin, vMax, Hmag, theta, phi, steps, s_mode,
                       time, tStep, tWrite, tStart);
     }
 
     json runPIM(std::string uuid, Junction &mtj,
                 double HoePulseAmplitude, double pulseStart, double pulseStop, CVector HoeDir,
-                double hMin, double hMax, double theta, double phi, int hsteps,
+                double vMin, double vMax, double Hmag, double theta, double phi, int steps, std::string s_mode,
                 double time, double tStep, double tWrite, double tStart)
     {
 
         typedef std::tuple<double, std::map<std::string, std::vector<double>>> intermediateRes;
-        const double hstep = (hMax - hMin) / hsteps;
+
+        H_MODE mode;
+        if (s_mode == "phi")
+        {
+            mode = PHI;
+        }
+        else if (s_mode == "theta")
+        {
+            mode = THETA;
+        }
+        else if (s_mode == "mag" || s_mode == "magnitude")
+        {
+            mode = MAG;
+        }
+
         spdlog::info("Calculating the PIM");
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
-        // distribute the frequencies
+        // distribute threads
+        std::vector<std::future<std::vector<intermediateRes>>> threadResults;
         const int threadNum = std::thread::hardware_concurrency() - 1;
+        threadResults.reserve(threadNum);
         spdlog::debug("Using {} threads to distribute the task workload!", threadNum);
 
-        std::vector<std::future<std::vector<intermediateRes>>> threadResults;
-        threadResults.reserve(threadNum);
+        Hspace HspaceVals = calculateHdistribution(Hmag, theta, phi, vMin, vMax, steps, mode);
+        auto Hdistribution = std::get<0>(HspaceVals);
+        auto itValues = std::get<1>(HspaceVals);
+        auto step = std::get<2>(HspaceVals);
+        spdlog::debug("Inferred step {}, len of dist {}/{}", step, Hdistribution.size(), itValues.size());
 
-        const int minThreadLoad = (int)hsteps / threadNum;
-        int extraThreadWorkload = hsteps % threadNum;
+        const int minThreadLoad = (int)steps / threadNum;
+        int extraThreadWorkload = steps % threadNum;
         spdlog::debug("Min subtask load {} per thread", minThreadLoad);
-        int lastThreadLoadIndx = 0;
 
+        std::vector<CVector>::iterator lastItIndx = Hdistribution.begin();
         for (int t = 0; t < threadNum; t++)
         {
             int threadLoad = minThreadLoad;
@@ -101,22 +165,28 @@ private:
             {
                 threadLoad += 1;
                 // TODO: think about this -- whether we actually want an even workload
-                // extraThreadWorkload--;
+                extraThreadWorkload--;
             }
-            const double threadMinH = hMin + lastThreadLoadIndx * hstep;
-            lastThreadLoadIndx += threadLoad;
-            const double threadMaxH = hMin + lastThreadLoadIndx * hstep;
 
-            spdlog::debug("Launching thread {} with Hs => {} to {}, load {}", t, threadMinH, threadMaxH, threadLoad);
+            auto threadMin = lastItIndx;
+            auto threadMax = lastItIndx + threadLoad;
+            lastItIndx = threadMax;
+            spdlog::debug("Launching thread {} with {} => {} to {}, load {}", t, s_mode,
+                          std::distance(Hdistribution.begin(), threadMin),
+                          std::distance(Hdistribution.begin(), threadMax)-1, threadLoad);
+            // the iterator never reaches the threadMax in the last loop
+            spdlog::debug("Launching thread {} with {} => {} to {}, load {}", t, s_mode,
+                          itValues[std::distance(Hdistribution.begin(), threadMin)],
+                          itValues[std::distance(Hdistribution.begin(), threadMax)-1], threadLoad);
             threadResults.emplace_back(std::async([=]() mutable {
                 std::vector<intermediateRes> resAcc;
-                int hIndx = 0;
-                for (double hAmplitude = threadMinH; hIndx < threadLoad; hAmplitude += hstep)
+                for (auto itVal = threadMin; itVal != threadMax; itVal++)
                 {
+                    CVector Hcurr(itVal->x, itVal->y, itVal->z);
                     const AxialDriver HDriver(
-                        ScalarDriver::getConstantDriver(hAmplitude * sin(theta) * cos(phi)),
-                        ScalarDriver::getConstantDriver(hAmplitude * sin(theta) * sin(phi)),
-                        ScalarDriver::getConstantDriver(hAmplitude * cos(theta)));
+                        ScalarDriver::getConstantDriver(Hcurr.x),
+                        ScalarDriver::getConstantDriver(Hcurr.y),
+                        ScalarDriver::getConstantDriver(Hcurr.z));
 
                     AxialDriver HoeDriver(
                         ScalarDriver::getStepDriver(0, HoePulseAmplitude, pulseStart, pulseStop),
@@ -136,9 +206,10 @@ private:
                         time,
                         tStep, tWrite, false, false, false);
 
-                    auto resTuple = std::make_tuple(hAmplitude, mtj.spectralFFT(tStart, tStep));
+                    const auto res = mtj.spectralFFT(tStart, tStep);
+                    auto resTuple = std::make_tuple(Hcurr.length(),
+                                                    res);
                     resAcc.push_back(std::move(resTuple));
-                    hIndx++;
                 }
                 return resAcc;
             }));
@@ -148,14 +219,16 @@ private:
         bool pushedFrequencies = false;
         for (auto &result : threadResults)
         {
-            for (auto [hAmpl, resMap] : result.get())
+            for (auto [hIndx, resMap] : result.get())
             {
                 json subresult;
-                subresult["hAmpl"] = std::move(hAmpl);
+                // spdlog::debug("H {}", hIndx);
+                subresult["itVal"] = hIndx;
                 subresult["amplitude"] = std::move(resMap["amplitude"]);
                 subresult["phase"] = std::move(resMap["phase"]);
                 if (!pushedFrequencies)
                 {
+                    finalRes["mode"] = mode;
                     finalRes["frequencies"] = std::move(resMap["frequencies"]);
                     pushedFrequencies = true;
                 }

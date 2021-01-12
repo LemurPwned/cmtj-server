@@ -8,13 +8,14 @@
 #include <boost/uuid/uuid_generators.hpp> // generators
 #include <boost/uuid/uuid_io.hpp>         // streaming operators etc.
 #include <chrono>
-#include <junction.hpp>
 
 #include <future>
 #include <map>
 #include <thread>
 
 #include "./third/httplib.h"
+#include "./third/junction.hpp"
+
 #include "DatabaseHandler.hpp"
 #include "QueueHandler.hpp"
 
@@ -71,7 +72,28 @@ public:
             layers.push_back(l);
         }
 
-        Junction j(layers, filename, task.value("Rp", 100), task.value("Rap", 200));
+        Junction j;
+        if (task.contains("Rp") && task.contains("Rap"))
+        {
+            j = Junction(layers, filename,
+                         task.at("Rp").get<double>(),
+                         task.at("Rap").get<double>());
+        }
+        else if (task.contains("Rx0") && task.contains("Ry0") &&
+                 task.contains("AMR") && task.contains("AHE") &&
+                 task.contains("SMR"))
+        {
+            j = Junction(layers, filename,
+                         task.at("Rx0").get<std::vector<double>>(),
+                         task.at("Ry0").get<std::vector<double>>(),
+                         task.at("AMR").get<std::vector<double>>(),
+                         task.at("AHE").get<std::vector<double>>(),
+                         task.at("SMR").get<std::vector<double>>());
+        }
+        else
+        {
+            throw std::runtime_error("Failed to provide adequate MR parameters!");
+        }
 
         for (auto driverDef : task.at("drivers"))
         {
