@@ -1,0 +1,169 @@
+{
+    "task": "pim",
+    "Rp": 100,
+    "Rap": 105,
+    "parameters": {
+        "threads": 4,
+        "Vmin": -800000,
+        "Vmax": 800000,
+        "steps": 40,
+        "Hmag": 0,
+        "mode": "magnitude",
+        "HOePulseAmplitude": 800,
+        "pulseStart": 0e-9,
+        "pulseStop": 0.2e-9,
+        "HOedir": [
+            0,
+            0,
+            1
+        ],
+        "theta": 90,
+        "phi": 45,
+        "time": 6e-9,
+        "tStep": 1e-12,
+        "tWrite": 1e-12,
+        "tStart": 2e-9
+    },
+    "drivers": [
+        {
+            "object": "anisotropy",
+            "layer": "bottom",
+            "subtype": "constant",
+            "constantValue": 728e3
+        },
+        {
+            "object": "anisotropy",
+            "layer": "free",
+            "subtype": "constant",
+            "constantValue": 305e3
+        },
+        {
+            "object": "IEC",
+            "layer": "free",
+            "subtype": "constant",
+            "constantValue": 1e-9
+        },
+        {
+            "object": "IEC",
+            "layer": "free",
+            "subtype": "constant",
+            "constantValue": 4e-5
+        }
+    ],
+    "layers": [
+        {
+            "id": "bottom",
+            "mag": [
+                0,
+                0,
+                1
+            ],
+            "anis": [
+                0.34071865,
+                -0.08715574,
+                0.936116
+            ],
+            "Ms": 795774.71,
+            "thickness": 1e-9,
+            "cellSurface": 1e-7,
+            "demagTensor": [
+                [
+                    0,
+                    0,
+                    0
+                ],
+                [
+                    0,
+                    0,
+                    0
+                ],
+                [
+                    0,
+                    0,
+                    1
+                ]
+            ],
+            "dipoleTensor": [
+                [
+                    0,
+                    0,
+                    0
+                ],
+                [
+                    0,
+                    0,
+                    0
+                ],
+                [
+                    0,
+                    0,
+                    0
+                ]
+            ],
+            "temperature": 0,
+            "includeSTT": false,
+            "damping": 0.035,
+            "currentDensity": 0,
+            "SlonczewskiSpacerLayerParameter": 1,
+            "beta": 0,
+            "spinPolarisation": 0
+        },
+        {
+            "id": "free",
+            "mag": [
+                0,
+                0,
+                1
+            ],
+            "anis": [
+                0,
+                -0.0871557,
+                0.996195
+            ],
+            "Ms": 795774.71,
+            "thickness": 1e-9,
+            "cellSurface": 1e-7,
+            "demagTensor": [
+                [
+                    0,
+                    0,
+                    0
+                ],
+                [
+                    0,
+                    0,
+                    0
+                ],
+                [
+                    0,
+                    0,
+                    1
+                ]
+            ],
+            "dipoleTensor": [
+                [
+                    0,
+                    0,
+                    0
+                ],
+                [
+                    0,
+                    0,
+                    0
+                ],
+                [
+                    0,
+                    0,
+                    0
+                ]
+            ],
+            "temperature": 0,
+            "includeSTT": false,
+            "damping": 0.035,
+            "currentDensity": 0,
+            "SlonczewskiSpacerLayerParameter": 1,
+            "beta": 0,
+            "spinPolarisation": 0
+        }
+    ]
+}

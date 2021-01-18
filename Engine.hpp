@@ -88,6 +88,7 @@ private:
     {
         spdlog::info("Parsing the PIM task");
         json subTaskDef = pimTask.at("parameters");
+        const int noThreads = subTaskDef.value("threads", std::thread::hardware_concurrency());
         const auto vMin = subTaskDef.at("Vmin").get<double>();
         const auto vMax = subTaskDef.at("Vmax").get<double>();
         const int steps = subTaskDef.at("steps").get<int>();
@@ -113,13 +114,14 @@ private:
         return runPIM(pimTask.at("uuid").get<std::string>(), j,
                       HoePulseAmplitude, pulseStart, pulseStop, CVector(HoeDir),
                       vMin, vMax, Hmag, theta, phi, steps, s_mode,
-                      time, tStep, tWrite, tStart);
+                      time, tStep, tWrite, tStart, noThreads);
     }
 
     json runPIM(std::string uuid, Junction &mtj,
                 double HoePulseAmplitude, double pulseStart, double pulseStop, CVector HoeDir,
                 double vMin, double vMax, double Hmag, double theta, double phi, int steps, std::string s_mode,
-                double time, double tStep, double tWrite, double tStart)
+                double time, double tStep, double tWrite, double tStart,
+                int threadNum)
     {
 
         typedef std::tuple<double, std::map<std::string, std::vector<double>>> intermediateRes;
@@ -143,7 +145,6 @@ private:
 
         // distribute threads
         std::vector<std::future<std::vector<intermediateRes>>> threadResults;
-        const int threadNum = std::thread::hardware_concurrency() - 1;
         threadResults.reserve(threadNum);
         spdlog::debug("Using {} threads to distribute the task workload!", threadNum);
 
@@ -171,13 +172,11 @@ private:
             auto threadMin = lastItIndx;
             auto threadMax = lastItIndx + threadLoad;
             lastItIndx = threadMax;
-            spdlog::debug("Launching thread {} with {} => {} to {}, load {}", t, s_mode,
-                          std::distance(Hdistribution.begin(), threadMin),
-                          std::distance(Hdistribution.begin(), threadMax) - 1, threadLoad);
             // the iterator never reaches the threadMax in the last loop
             spdlog::debug("Launching thread {} with {} => {} to {}, load {}", t, s_mode,
                           itValues[std::distance(Hdistribution.begin(), threadMin)],
                           itValues[std::distance(Hdistribution.begin(), threadMax) - 1], threadLoad);
+            const auto startPtr = Hdistribution.begin();
             threadResults.emplace_back(std::async([=]() mutable {
                 std::vector<intermediateRes> resAcc;
                 for (auto itVal = threadMin; itVal != threadMax; itVal++)
@@ -207,8 +206,7 @@ private:
                         tStep, tWrite, false, false, false);
 
                     const auto res = mtj.spectralFFT(tStart, tStep);
-                    auto resTuple = std::make_tuple(Hcurr.length(),
-                                                    res);
+                    auto resTuple = std::make_tuple(itValues[std::distance(startPtr, itVal)], res);
                     resAcc.push_back(std::move(resTuple));
                 }
                 return resAcc;
@@ -222,13 +220,12 @@ private:
             for (auto [hIndx, resMap] : result.get())
             {
                 json subresult;
-                // spdlog::debug("H {}", hIndx);
-                subresult["itVal"] = hIndx;
+                subresult[s_mode] = hIndx;
                 subresult["amplitude"] = std::move(resMap["amplitude"]);
                 subresult["phase"] = std::move(resMap["phase"]);
                 if (!pushedFrequencies)
                 {
-                    finalRes["mode"] = mode;
+                    finalRes["mode"] = s_mode;
                     finalRes["frequencies"] = std::move(resMap["frequencies"]);
                     pushedFrequencies = true;
                 }
@@ -245,6 +242,7 @@ private:
     {
         spdlog::info("Parsing the VSD task");
         json subTaskDef = vsdTask.at("parameters");
+        const int noThreads = subTaskDef.value("threads", std::thread::hardware_concurrency());
         const double phase = subTaskDef.at("phase").get<double>();
 
         const auto Hoe = subTaskDef.at("HOe").get<double>();
@@ -291,14 +289,15 @@ private:
                       tStep,
                       tWrite,
                       tStart,
-                      power);
+                      power,
+                      noThreads);
     }
 
     json runVSD(std::string uuid, Junction &mtj, double Hoe, CVector HoeDir, double Hmag, double vMin,
                 double vMax, double theta, double phi, int steps, std::string s_mode,
                 double phase,
                 double fstart, double fstop, int fsteps, double time,
-                double tStep, double tWrite, double tStart, double power)
+                double tStep, double tWrite, double tStart, double power, int threadNum)
     {
 
         H_MODE mode;
@@ -331,7 +330,6 @@ private:
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
         // distribute the frequencies
-        const int threadNum = std::thread::hardware_concurrency();
         spdlog::debug("Using {} threads to distribute the task workload!", threadNum);
 
         std::vector<std::future<std::vector<multituple>>> threadResults;
