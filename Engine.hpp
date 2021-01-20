@@ -21,6 +21,7 @@
 
 #include <cmath>
 #include <exception>
+#include <fftw3.h>
 #include <iomanip>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -89,6 +90,7 @@ private:
         spdlog::info("Parsing the PIM task");
         json subTaskDef = pimTask.at("parameters");
         const int noThreads = subTaskDef.value("threads", std::thread::hardware_concurrency());
+        // const std::string resistancePIM = subTaskDef.at("resistancePIM").get<std::string>();
         const auto vMin = subTaskDef.at("Vmin").get<double>();
         const auto vMax = subTaskDef.at("Vmax").get<double>();
         const int steps = subTaskDef.at("steps").get<int>();
@@ -111,13 +113,13 @@ private:
         const double tWrite = subTaskDef.at("tWrite").get<double>();
         const double tStart = subTaskDef.at("tStart").get<double>();
 
-        return runPIM(pimTask.at("uuid").get<std::string>(), j,
+        return runPIM(pimTask.at("uuid").get<std::string>(), j, // resistancePIM,
                       HoePulseAmplitude, pulseStart, pulseStop, CVector(HoeDir),
                       vMin, vMax, Hmag, theta, phi, steps, s_mode,
                       time, tStep, tWrite, tStart, noThreads);
     }
 
-    json runPIM(std::string uuid, Junction &mtj,
+    json runPIM(std::string uuid, Junction &mtj, // std::string resistancePIM,
                 double HoePulseAmplitude, double pulseStart, double pulseStop, CVector HoeDir,
                 double vMin, double vMax, double Hmag, double theta, double phi, int steps, std::string s_mode,
                 double time, double tStep, double tWrite, double tStart,
@@ -159,6 +161,20 @@ private:
         spdlog::debug("Min subtask load {} per thread", minThreadLoad);
 
         std::vector<CVector>::iterator lastItIndx = Hdistribution.begin();
+
+        fftw_make_planner_thread_safe();
+        // figure out how much approx. should be taken for the plan
+        const int fftLength = (time - tStart) / tStep;
+        // rank is 1 since we have 1D transform
+        // 3 plans for each M x 2 layers x # of simulations
+        // double in[fftLength];
+        // const fftw_plan forwards = fftw_plan_many_dft_r2c(1, &fftLength, 3 * 2 * Hdistribution.size(), in, 0, 1, 1,
+        //                                                   reinterpret_cast<fftw_complex*>(in), 0, 1, 1, FFTW_PATIENT);
+        // free(in);
+        // fftw_plan plan = fftw_plan_dft_r2c_1d(cutMag.size(),
+        //                                       cutMag.data(),
+        //                                       out,
+        //                                       FFTW_ESTIMATE);
         for (int t = 0; t < threadNum; t++)
         {
             int threadLoad = minThreadLoad;
@@ -177,6 +193,7 @@ private:
                           itValues[std::distance(Hdistribution.begin(), threadMin)],
                           itValues[std::distance(Hdistribution.begin(), threadMax) - 1], threadLoad);
             const auto startPtr = Hdistribution.begin();
+
             threadResults.emplace_back(std::async([=]() mutable {
                 std::vector<intermediateRes> resAcc;
                 for (auto itVal = threadMin; itVal != threadMax; itVal++)
@@ -204,10 +221,17 @@ private:
                     mtj.runSimulation(
                         time,
                         tStep, tWrite, false, false, false);
-
-                    const auto res = mtj.spectralFFT(tStart, tStep);
+                    auto res = mtj.spectralFFT(fftLength, tStart, tStep);
+                    std::vector<double> mag_vector, resistances;
+                    for (auto &l : mtj.layers)
+                    {
+                        const auto mag = l.mag.tolist();
+                        mag_vector.insert(mag_vector.end(), mag.begin(), mag.end());
+                    }
+                    res["mags"] = std::move(mag_vector);
+                    res["res"] = {mtj.log["Rx"].back(), mtj.log["Ry"].back(), mtj.log["Rz"].back()};
                     auto resTuple = std::make_tuple(itValues[std::distance(startPtr, itVal)], res);
-                    resAcc.push_back(std::move(resTuple));
+                    resAcc.push_back(resTuple);
                 }
                 return resAcc;
             }));
@@ -217,12 +241,17 @@ private:
         bool pushedFrequencies = false;
         for (auto &result : threadResults)
         {
-            for (auto [hIndx, resMap] : result.get())
+            for (auto &[hIndx, resMap] : result.get())
             {
                 json subresult;
                 subresult[s_mode] = hIndx;
-                subresult["amplitude"] = std::move(resMap["amplitude"]);
-                subresult["phase"] = std::move(resMap["phase"]);
+                // std::cout << resMap["bottom_my_amplitude"][0] << std::endl;
+                for (auto &[k, v] : resMap)
+                {
+                    if (k != "frequencies")
+                        subresult[k] = v;
+                }
+                // subresult["phase"] = std::move(resMap["phase"]);
                 if (!pushedFrequencies)
                 {
                     finalRes["mode"] = s_mode;
@@ -315,7 +344,7 @@ private:
         }
 
         typedef std::tuple<double, std::map<std::string, double>> fnRes;
-        typedef std::tuple<double, double, double, CVector, CVector> multituple;
+        typedef std::tuple<double, double, double> multituple;
 
         double fstep = ((fstop - fstart) / fsteps);
         spdlog::info("Calculating the VSD");
@@ -388,8 +417,7 @@ private:
 
                         auto res = mtj.calculateVoltageSpinDiode(freq, power, tStart);
                         // Take last m value as well
-                        auto resTuple = std::make_tuple(itValues[i], freq, res["Vmix"],
-                                                        mtj.layers[0].mag, mtj.layers[1].mag);
+                        auto resTuple = std::make_tuple(itValues[i], freq, res["Vmix"]);
                         resAcc.push_back(resTuple);
                     }
                     freqIndx++;
@@ -400,13 +428,11 @@ private:
         json finalRes;
         for (auto &result : threadResults)
         {
-            for (const auto [mode_value, freq, vmix, l1mag, l2mag] : result.get())
+            for (const auto [mode_value, freq, vmix] : result.get())
             {
                 finalRes[s_mode].push_back(std::move(mode_value));
                 finalRes["frequencies"].push_back(std::move(freq));
                 finalRes["Vmix"].push_back(std::move(vmix));
-                finalRes["mags_1"].push_back({l1mag.x, l1mag.y, l1mag.z});
-                finalRes["mags_2"].push_back({l2mag.x, l2mag.y, l2mag.z});
             }
         }
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
