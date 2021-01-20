@@ -19,8 +19,8 @@ See below in [Building the image section](#building-the-image) you wish to build
 Most of the use cases will probably involve Python, so head to [example/task_runner.py](example/task_runner.py) 
 to view an example of a code that can be run to fetch the results from the server.  
 There are two tasks included:
-* [VSD - Voltage spin diode](example/vsd_task.py)
-* [PIM - Pulse Induced Magnetometry](example/pim_task.py)
+* [VSD - Voltage spin diode](example/vsd_task.json)
+* [PIM - Pulse Induced Magnetometry](example/pim_task.json)
 
 Modify the code and observe the responses to check out different behaviours of the server.
 ## Building the image
