@@ -70,7 +70,7 @@ def compose_max_PIM(data: dict, task_def: dict):
     freqs = data['frequencies']
     for r in data['pim']:
         fields.append(r[task_def['parameters']['mode']])
-        indx = np.argmax(r['amplitude'])
+        indx = np.argmax(r['free_mz_amplitude'])
         max_frequencies.append(freqs[indx])
 
     fields, max_frequencies = zip(*sorted(zip(fields, max_frequencies)))

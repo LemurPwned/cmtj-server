@@ -164,17 +164,6 @@ private:
 
         fftw_make_planner_thread_safe();
         // figure out how much approx. should be taken for the plan
-        const int fftLength = (time - tStart) / tStep;
-        // rank is 1 since we have 1D transform
-        // 3 plans for each M x 2 layers x # of simulations
-        // double in[fftLength];
-        // const fftw_plan forwards = fftw_plan_many_dft_r2c(1, &fftLength, 3 * 2 * Hdistribution.size(), in, 0, 1, 1,
-        //                                                   reinterpret_cast<fftw_complex*>(in), 0, 1, 1, FFTW_PATIENT);
-        // free(in);
-        // fftw_plan plan = fftw_plan_dft_r2c_1d(cutMag.size(),
-        //                                       cutMag.data(),
-        //                                       out,
-        //                                       FFTW_ESTIMATE);
         for (int t = 0; t < threadNum; t++)
         {
             int threadLoad = minThreadLoad;
@@ -221,7 +210,7 @@ private:
                     mtj.runSimulation(
                         time,
                         tStep, tWrite, false, false, false);
-                    auto res = mtj.spectralFFT(fftLength, tStart, tStep);
+                    auto res = mtj.spectralFFT(tStart, tStep);
                     std::vector<double> mag_vector, resistances;
                     for (auto &l : mtj.layers)
                     {
@@ -245,7 +234,6 @@ private:
             {
                 json subresult;
                 subresult[s_mode] = hIndx;
-                // std::cout << resMap["bottom_my_amplitude"][0] << std::endl;
                 for (auto &[k, v] : resMap)
                 {
                     if (k != "frequencies")
