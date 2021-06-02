@@ -40,7 +40,7 @@ void setScalarDriver(const std::string &obj, Junction &j, const std::string &lay
     }
     else if (obj == "current")
     {
-        j.setLayerIECDriver(layerD, driver);
+        j.setLayerCurrentDriver(layerD, driver);
     }
     else
     {
